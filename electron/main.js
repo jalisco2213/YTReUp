@@ -70,7 +70,12 @@ function unique(items) {
 function getToolDirs() {
   const dirs = [
     path.join(__dirname, '..', 'bin'),
-    path.join(process.cwd(), 'bin')
+    path.join(process.cwd(), 'bin'),
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+    '/usr/bin',
+    '/bin',
+    '/opt/local/bin'
   ]
 
   try {
@@ -158,7 +163,28 @@ function commandExists(command) {
 function getFfmpegPath() {
   const local = findExistingFile(getFfmpegNames())
   if (local) return local
+
+  const absolutePaths = process.platform === 'win32'
+    ? []
+    : [
+        '/opt/homebrew/bin/ffmpeg',
+        '/usr/local/bin/ffmpeg',
+        '/usr/bin/ffmpeg',
+        '/bin/ffmpeg',
+        '/opt/local/bin/ffmpeg'
+      ]
+
+  for (const filePath of absolutePaths) {
+    try {
+      if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+        ensureExecutable(filePath)
+        return filePath
+      }
+    } catch {}
+  }
+
   if (commandExists('ffmpeg')) return 'ffmpeg'
+
   return null
 }
 
@@ -307,17 +333,34 @@ function parseProgressLine(line) {
   }
 }
 
-function normalizeFormat(format) {
-  const formats = {
-    best: 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best',
-    '2160': 'bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=2160]+bestaudio/best[height<=2160]',
-    '1440': 'bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1440]+bestaudio/best[height<=1440]',
-    '1080': 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]',
-    '720': 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]',
-    '480': 'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480]'
-  }
+function compatibleMp4Format(height) {
+  const limit = height ? `[height<=${height}]` : ''
 
-  return formats[String(format || '').trim()] || format || formats.best
+  return [
+    `bestvideo${limit}[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]`,
+    `best${limit}[ext=mp4][vcodec^=avc1]`,
+    `bestvideo${limit}[vcodec^=avc1]+bestaudio[ext=m4a]`,
+    `bestvideo${limit}[vcodec^=avc1]+bestaudio`,
+    `bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]`,
+    `best[ext=mp4][vcodec^=avc1]`
+  ].join('/')
+}
+
+function normalizeFormat(format) {
+  const raw = String(format || '').trim()
+  const heightMatch = raw.match(/height\s*<=\s*(\d+)/)
+
+  if (raw === '2160') return compatibleMp4Format(2160)
+  if (raw === '1440') return compatibleMp4Format(1440)
+  if (raw === '1080') return compatibleMp4Format(1080)
+  if (raw === '720') return compatibleMp4Format(720)
+  if (raw === '480') return compatibleMp4Format(480)
+
+  if (!raw || raw === 'best') return compatibleMp4Format(null)
+  if (heightMatch?.[1]) return compatibleMp4Format(heightMatch[1])
+  if (raw.includes('bestvideo') || raw.includes('bestaudio') || raw.includes('best[')) return compatibleMp4Format(null)
+
+  return raw
 }
 
 ipcMain.handle('ytdlp:info', async (event, url) => {
@@ -385,7 +428,7 @@ ipcMain.handle('ytdlp:download', async (event, { url, outputDir, format }) => {
     const finalFormat = normalizeFormat(format)
 
     if (!ffmpegPath && finalFormat.includes('+')) {
-      reject(new Error('Для скачивания в хорошем качестве нужен ffmpeg. Положи ffmpeg рядом с yt-dlp в папку bin или установи ffmpeg в систему. Без него YouTube часто отдаёт только мыльный одиночный mp4.'))
+      reject(new Error('Для скачивания MP4 в хорошем качестве нужен ffmpeg. Установи ffmpeg или положи его в папку bin.'))
       return
     }
 
@@ -396,6 +439,7 @@ ipcMain.handle('ytdlp:download', async (event, { url, outputDir, format }) => {
       '--newline',
       '--progress',
       '--no-mtime',
+      '--check-formats',
       '-f',
       finalFormat,
       '--merge-output-format',
@@ -442,10 +486,12 @@ ipcMain.handle('ytdlp:download', async (event, { url, outputDir, format }) => {
 
         const destMatch = line.match(/\[download\]\s+Destination:\s+(.+)/i)
         const mergeMatch = line.match(/\[Merger\]\s+Merging formats into\s+"(.+)"/i)
+        const moveMatch = line.match(/\[MoveFiles\]\s+Moving file\s+"(.+?)"\s+to\s+"(.+?)"/i)
         const alreadyMatch = line.match(/\[download\]\s+(.+)\s+has already been downloaded/i)
 
         if (destMatch) lastFile = destMatch[1].trim()
         if (mergeMatch) lastFile = mergeMatch[1].trim()
+        if (moveMatch) lastFile = moveMatch[2].trim()
         if (alreadyMatch) lastFile = alreadyMatch[1].trim()
       }
     })
@@ -481,6 +527,11 @@ ipcMain.handle('ytdlp:download', async (event, { url, outputDir, format }) => {
 
       if (!lastFile) {
         finish(new Error('Видео скачано, но путь к файлу не найден'))
+        return
+      }
+
+      if (/\.(m4a|mp3|aac|opus|ogg|wav)$/i.test(lastFile)) {
+        finish(new Error('Скачался только аудиофайл. Нужно выбрать MP4/H.264 формат и убедиться, что ffmpeg доступен.'))
         return
       }
 
