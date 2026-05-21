@@ -258,7 +258,7 @@ onMounted(async () => {
 }
 
 .sidebar {
-  width: 210px;
+  width: 250px;
   background: var(--bg2);
   border-right: 1px solid var(--border);
   display: flex;

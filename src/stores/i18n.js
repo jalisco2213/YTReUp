@@ -100,7 +100,6 @@ const messages = {
       embeddable: 'Allow embedding',
       ratingsVisible: 'Ratings visible',
       videoSaved: 'Video updated',
-      searchQuota: 'Search uses more YouTube API quota. Empty search loads uploads playlist with pagination.'
     },
     settings: {
       title: 'Settings',
@@ -292,7 +291,6 @@ const messages = {
       embeddable: 'Можно встраивать',
       ratingsVisible: 'Оценки видны',
       videoSaved: 'Видео обновлено',
-      searchQuota: 'Поиск тратит больше квоты YouTube API. Пустой поиск загружает плейлист загрузок с пагинацией.'
     },
     settings: {
       title: 'Настройки',
