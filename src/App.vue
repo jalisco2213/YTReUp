@@ -101,11 +101,6 @@ onMounted(async () => {
           <span>{{ t('nav.upload') }}</span>
         </router-link>
 
-        <router-link to="/videos" class="nav-item">
-          <span class="nav-icon">▶</span>
-          <span>{{ t('nav.videos') }}</span>
-        </router-link>
-
         <div class="sidebar-spacer" />
 
         <router-link to="/settings" class="nav-item">

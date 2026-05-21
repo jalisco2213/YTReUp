@@ -24,6 +24,7 @@ export const useYouTubeStore = defineStore('youtube', () => {
   const channelStats = ref(null)
   const recentVideos = ref([])
   const videos = ref([])
+  const playlists = ref([])
   const videosNextPageToken = ref('')
   const selectedVideo = ref(null)
   const isLoading = ref(false)
@@ -86,6 +87,7 @@ export const useYouTubeStore = defineStore('youtube', () => {
       channelStats.value = null
       recentVideos.value = []
       videos.value = []
+      playlists.value = []
       selectedVideo.value = null
       videosNextPageToken.value = ''
     }
@@ -121,6 +123,7 @@ export const useYouTubeStore = defineStore('youtube', () => {
       await fetchChannelInfo()
       await fetchRecentVideos(12)
       await fetchVideos({ maxResults: 25 })
+      await fetchPlaylists()
       return data
     } catch (e) {
       error.value = e.message || 'Authorization failed'
@@ -199,7 +202,7 @@ export const useYouTubeStore = defineStore('youtube', () => {
   }
 
   function apiError(data, fallback) {
-    return data?.error?.message || data?.error_description || data?.error || fallback
+    return data?.error?.message || data?.error_description || data?.error || data?.raw || fallback
   }
 
   function buildUrl(endpoint, params) {
@@ -379,6 +382,65 @@ export const useYouTubeStore = defineStore('youtube', () => {
     }
   }
 
+  async function fetchPlaylists() {
+    if (!isAuthenticated.value) {
+      playlists.value = []
+      return []
+    }
+
+    const all = []
+    let pageToken = ''
+
+    do {
+      const res = await apiFetch(buildUrl('https://www.googleapis.com/youtube/v3/playlists', {
+        part: 'snippet,contentDetails,status',
+        mine: 'true',
+        maxResults: 50,
+        pageToken
+      }))
+      const data = await readJson(res)
+
+      if (!res.ok) {
+        throw new Error(apiError(data, 'Failed to fetch playlists'))
+      }
+
+      all.push(...(data.items || []))
+      pageToken = data.nextPageToken || ''
+    } while (pageToken)
+
+    playlists.value = all
+    return all
+  }
+
+  async function addVideoToPlaylist(videoId, playlistId) {
+    const cleanVideoId = String(videoId || '').trim()
+    const cleanPlaylistId = String(playlistId || '').trim()
+
+    if (!cleanVideoId || !cleanPlaylistId) return null
+
+    const res = await apiFetch('https://www.googleapis.com/youtube/v3/playlistItems?part=snippet', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        snippet: {
+          playlistId: cleanPlaylistId,
+          resourceId: {
+            kind: 'youtube#video',
+            videoId: cleanVideoId
+          }
+        }
+      })
+    })
+
+    const data = await readJson(res)
+
+    if (!res.ok) {
+      throw new Error(apiError(data, 'Failed to add video to playlist'))
+    }
+
+    return data
+  }
+
   function buildVideoPayload(currentVideo, patch) {
     const snippet = {
       title: patch.title ?? currentVideo?.snippet?.title ?? '',
@@ -458,6 +520,7 @@ export const useYouTubeStore = defineStore('youtube', () => {
     notifySubscribers,
     madeForKids,
     ratingsVisible,
+    playlistId,
     onProgress
   }) {
     const targetPath = String(filePath || '').trim()
@@ -517,36 +580,56 @@ export const useYouTubeStore = defineStore('youtube', () => {
       notifySubscribers: notifySubscribers !== false
     })
 
-    try {
-      if (typeof onProgress === 'function') onProgress(0)
-
+    const runUpload = async () => {
       try {
-        const result = await window.electron.youtubeUploadVideo(payload())
-        if (typeof onProgress === 'function') onProgress(100)
-        if (result?.id) fetchRecentVideos(12).catch(() => {})
-        return result
+        return await window.electron.youtubeUploadVideo(payload())
       } catch (e) {
         const message = e.message || String(e)
 
         if (message.includes('(401)') && refreshToken.value) {
           await refreshAccessToken()
-          const result = await window.electron.youtubeUploadVideo(payload())
-          if (typeof onProgress === 'function') onProgress(100)
-          if (result?.id) fetchRecentVideos(12).catch(() => {})
-          return result
+          return await window.electron.youtubeUploadVideo(payload())
         }
 
         throw e
       }
+    }
+
+    try {
+      if (typeof onProgress === 'function') onProgress(0)
+
+      const result = await runUpload()
+
+      if (String(playlistId || '').trim() && result?.id) {
+        await addVideoToPlaylist(result.id, playlistId)
+      }
+
+      if (typeof onProgress === 'function') onProgress(100)
+
+      if (result?.id) {
+        fetchRecentVideos(12).catch(() => {})
+        fetchVideos({ maxResults: 25 }).catch(() => {})
+      }
+
+      return result
     } finally {
       removeProgress?.()
     }
   }
 
   async function uploadThumbnail(videoId, file) {
-    const buf = await file.arrayBuffer()
+    const cleanVideoId = String(videoId || '').trim()
 
-    const res = await apiFetch(`https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId=${encodeURIComponent(videoId)}&uploadType=media`, {
+    if (!cleanVideoId) {
+      throw new Error('Video ID is required')
+    }
+
+    if (!file?.arrayBuffer) {
+      throw new Error('Выберите изображение')
+    }
+
+    const buf = await file.arrayBuffer()
+    const res = await apiFetch(`https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId=${encodeURIComponent(cleanVideoId)}&uploadType=media`, {
       method: 'POST',
       headers: { 'Content-Type': file.type || 'image/jpeg' },
       body: buf
@@ -558,6 +641,7 @@ export const useYouTubeStore = defineStore('youtube', () => {
       throw new Error(apiError(data, 'Thumbnail upload failed'))
     }
 
+    await fetchVideoDetails(cleanVideoId).catch(() => {})
     return data
   }
 
@@ -568,6 +652,7 @@ export const useYouTubeStore = defineStore('youtube', () => {
     channelStats.value = null
     recentVideos.value = []
     videos.value = []
+    playlists.value = []
     selectedVideo.value = null
     videosNextPageToken.value = ''
     await saveConfigPatch({ accessToken: null, refreshToken: null })
@@ -580,6 +665,7 @@ export const useYouTubeStore = defineStore('youtube', () => {
     channelStats,
     recentVideos,
     videos,
+    playlists,
     videosNextPageToken,
     selectedVideo,
     isLoading,
@@ -598,6 +684,8 @@ export const useYouTubeStore = defineStore('youtube', () => {
     fetchRecentVideos,
     fetchVideos,
     fetchVideoDetails,
+    fetchPlaylists,
+    addVideoToPlaylist,
     updateVideo,
     uploadVideo,
     uploadThumbnail,

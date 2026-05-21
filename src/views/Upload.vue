@@ -88,6 +88,23 @@
         </div>
 
         <div class="card section">
+          <div class="section-head">{{ local('Плейлист', 'Playlist') }}</div>
+          <label class="label">{{ local('Добавить после загрузки', 'Add after upload') }}</label>
+          <div class="playlist-row">
+            <select v-model="meta.playlistId" :disabled="playlistsLoading">
+              <option value="">{{ local('Не добавлять в плейлист', 'Do not add to playlist') }}</option>
+              <option v-for="playlist in yt.playlists" :key="playlist.id" :value="playlist.id">
+                {{ playlist.snippet?.title || playlist.id }}
+              </option>
+            </select>
+            <button class="btn-secondary" @click="loadPlaylists" :disabled="playlistsLoading || !yt.isAuthenticated">
+              <span :class="{ spin: playlistsLoading }">↻</span>
+            </button>
+          </div>
+          <div class="mini-hint">{{ local('Выбери плейлист, и ролик автоматически попадёт туда после загрузки.', 'Select a playlist and the uploaded video will be added automatically.') }}</div>
+        </div>
+
+        <div class="card section">
           <div class="section-head">{{ t('upload.classification') }}</div>
 
           <label class="label">{{ t('common.category') }}</label>
@@ -170,6 +187,7 @@
             <div>
               <div class="done-title">{{ t('upload.uploaded') }}</div>
               <div class="mono video-link">youtu.be/{{ uploadResult.id }}</div>
+              <div v-if="meta.playlistId" class="mono playlist-done">{{ local('Добавлено в плейлист', 'Added to playlist') }}</div>
             </div>
             <button class="btn-ghost" @click="openVideo(uploadResult.id)">{{ t('common.open') }} →</button>
           </div>
@@ -208,6 +226,7 @@ const uploadPhase = ref('')
 const uploadPct = ref(0)
 const uploadResult = ref(null)
 const error = ref('')
+const playlistsLoading = ref(false)
 
 const meta = ref({
   title: '',
@@ -221,7 +240,8 @@ const meta = ref({
   embeddable: true,
   notifySubscribers: true,
   madeForKids: false,
-  ratingsVisible: true
+  ratingsVisible: true,
+  playlistId: ''
 })
 
 const categories = [
@@ -242,23 +262,44 @@ const categories = [
 ]
 
 const privacyOpts = computed(() => [
-  { value: 'private', icon: '◆', label: t('common.private'), desc: i18n.language === 'ru' ? 'Видно только тебе и выбранным людям' : 'Only you and selected people can watch' },
-  { value: 'unlisted', icon: '◇', label: t('common.unlisted'), desc: i18n.language === 'ru' ? 'Доступно только по ссылке' : 'Anyone with the link can watch' },
-  { value: 'public', icon: '●', label: t('common.public'), desc: i18n.language === 'ru' ? 'Видео видно всем' : 'Visible to everyone' },
-  { value: 'scheduled', icon: '◷', label: t('common.scheduled'), desc: i18n.language === 'ru' ? 'Публикация в выбранное время' : 'Publish at selected time' }
+  { value: 'private', icon: '◆', label: t('common.private'), desc: local('Видно только тебе и выбранным людям', 'Only you and selected people can watch') },
+  { value: 'unlisted', icon: '◇', label: t('common.unlisted'), desc: local('Доступно только по ссылке', 'Anyone with the link can watch') },
+  { value: 'public', icon: '●', label: t('common.public'), desc: local('Видео видно всем', 'Visible to everyone') },
+  { value: 'scheduled', icon: '◷', label: t('common.scheduled'), desc: local('Публикация в выбранное время', 'Publish at selected time') }
 ])
 
 const parsedTags = computed(() => tagsRaw.value.split(',').map(t => t.trim()).filter(Boolean).slice(0, 500))
+
 const phaseLabel = computed(() => {
-  if (uploadPhase.value === 'uploading') return i18n.language === 'ru' ? 'Загрузка видео…' : 'Uploading video…'
+  if (uploadPhase.value === 'uploading') return local('Загрузка видео…', 'Uploading video…')
   if (uploadPhase.value === 'thumbnail') return t('upload.settingThumbnail')
   return t('common.loading')
 })
 
-onMounted(() => {
+onMounted(async () => {
   if (route.query.file) filePath.value = String(route.query.file)
   if (route.query.title) meta.value.title = String(route.query.title).slice(0, 100)
+  if (yt.isAuthenticated) await loadPlaylists()
 })
+
+function currentLang() {
+  return i18n.language?.value || i18n.language || 'ru'
+}
+
+function local(ru, en) {
+  return currentLang() === 'en' ? en : ru
+}
+
+async function loadPlaylists() {
+  playlistsLoading.value = true
+  try {
+    await yt.fetchPlaylists()
+  } catch (e) {
+    error.value = e.message || String(e)
+  } finally {
+    playlistsLoading.value = false
+  }
+}
 
 async function chooseFile() {
   const file = await window.electron?.openFile()
@@ -282,6 +323,7 @@ function onThumbDrop(e) {
 
 function setThumb(file) {
   if (!file.type.startsWith('image/')) return
+  clearThumb()
   thumbnailFile.value = file
   thumbnailPreview.value = URL.createObjectURL(file)
 }
@@ -314,6 +356,7 @@ async function upload() {
       notifySubscribers: meta.value.notifySubscribers,
       madeForKids: meta.value.madeForKids,
       ratingsVisible: meta.value.ratingsVisible,
+      playlistId: meta.value.playlistId,
       onProgress: p => uploadPct.value = p
     })
 
@@ -325,6 +368,7 @@ async function upload() {
     uploadResult.value = result
     uploadPhase.value = ''
     await yt.fetchRecentVideos(12).catch(() => {})
+    await yt.fetchVideos({ maxResults: 25 }).catch(() => {})
   } catch (e) {
     error.value = e.message || String(e)
     uploadPhase.value = ''
@@ -364,6 +408,10 @@ textarea { resize: vertical; min-height: 150px; }
 .thumb-overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; opacity: 0; transition: opacity 0.12s; font-weight: 700; }
 .thumb-drop:hover .thumb-overlay { opacity: 1; }
 .remove-thumb { margin-top: 8px; font-size: 12px; color: var(--accent); }
+.playlist-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: stretch; }
+.playlist-row button { padding: 10px 13px; }
+.mini-hint { color: var(--text2); font-size: 12px; line-height: 1.45; margin-top: 8px; }
+.playlist-done { color: var(--green); font-size: 11px; margin-top: 4px; }
 .privacy-list { display: flex; flex-direction: column; gap: 8px; }
 .privacy-opt input { display: none; }
 .privacy-label { display: flex; align-items: center; gap: 12px; border: 1px solid var(--border); background: var(--bg2); border-radius: var(--radius); padding: 12px; cursor: pointer; transition: all 0.12s; }
@@ -393,10 +441,10 @@ textarea { resize: vertical; min-height: 150px; }
 .done-icon { width: 36px; height: 36px; border-radius: 50%; background: rgba(0,245,160,0.1); color: var(--green); display: flex; align-items: center; justify-content: center; font-weight: 800; }
 .done-title { font-weight: 800; }
 .video-link { color: var(--text2); font-size: 11px; }
-.done-card button { margin-left: auto; }
-.error-msg { color: var(--accent); font-size: 12px; font-family: var(--font-mono); }
-.upload-btn { width: 100%; justify-content: center; padding: 14px 20px; }
+.upload-btn { width: 100%; justify-content: center; }
+.error-msg { color: var(--accent); font-size: 12px; font-family: var(--font-mono); line-height: 1.5; }
 .spin { display: inline-block; animation: rotate 0.8s linear infinite; }
 @keyframes rotate { to { transform: rotate(360deg); } }
 @media (max-width: 1080px) { .layout { grid-template-columns: 1fr; } }
+@media (max-width: 640px) { .file-row, .playlist-row { grid-template-columns: 1fr; display: grid; } }
 </style>
