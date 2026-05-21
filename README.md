@@ -1,5 +1,5 @@
 <h1>
-  <img src="https://i.ibb.co/bZY7X9r/8b3b8b98-7525-4e3d-89d4-0bd546adab82-removebg-preview.png" width="36" height="36" align="center" alt="YTReUp logo" />
+  <img src="https://i.ibb.co/bZY7X9r/8b3b8b98-7525-4e3d-89d4-0bd546adab82-removebg-preview.png" width="36" height="36" alt="YTReUp logo" />
   YTReUp
 </h1>
 
