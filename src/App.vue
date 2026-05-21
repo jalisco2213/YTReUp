@@ -1,3 +1,48 @@
+<script setup>
+import { computed, onMounted } from "vue";
+import { useYouTubeStore } from "@/stores/youtube";
+import { useQueueStore } from "@/stores/queue";
+import { useI18nStore } from "@/stores/i18n";
+
+const yt = useYouTubeStore();
+const queue = useQueueStore();
+const i18n = useI18nStore();
+const t = i18n.t;
+
+const pendingCount = computed(
+  () =>
+    queue.items.filter((i) => ["pending", "downloading", "uploading"].includes(i.status))
+      .length
+);
+
+function formatNum(n) {
+  if (!n) return "0";
+  const num = parseInt(n);
+  if (num >= 1e6) return (num / 1e6).toFixed(1) + "M";
+  if (num >= 1e3) return (num / 1e3).toFixed(1) + "K";
+  return num.toString();
+}
+
+function minimize() {
+  window.electron?.minimize();
+}
+function maximize() {
+  window.electron?.maximize();
+}
+function close() {
+  window.electron?.close();
+}
+
+onMounted(async () => {
+  await i18n.loadLanguage();
+  await yt.loadConfig();
+  if (yt.isAuthenticated) {
+    yt.fetchChannelInfo().catch(() => {});
+    yt.fetchRecentVideos(12).catch(() => {});
+  }
+});
+</script>
+
 <template>
   <div class="app-shell">
     <div class="titlebar" @dblclick="maximize">
@@ -7,8 +52,20 @@
       </div>
       <div class="titlebar-drag" />
       <div class="titlebar-language">
-        <button class="lang-btn" :class="{ active: i18n.language === 'ru' }" @click.stop="i18n.setLanguage('ru')">RU</button>
-        <button class="lang-btn" :class="{ active: i18n.language === 'en' }" @click.stop="i18n.setLanguage('en')">EN</button>
+        <button
+          class="lang-btn"
+          :class="{ active: i18n.language === 'ru' }"
+          @click.stop="i18n.setLanguage('ru')"
+        >
+          RU
+        </button>
+        <button
+          class="lang-btn"
+          :class="{ active: i18n.language === 'en' }"
+          @click.stop="i18n.setLanguage('en')"
+        >
+          EN
+        </button>
       </div>
       <div class="titlebar-controls">
         <button class="wc wc-min" @click="minimize">—</button>
@@ -21,44 +78,52 @@
       <nav class="sidebar">
         <router-link to="/dashboard" class="nav-item">
           <span class="nav-icon">◈</span>
-          <span>{{ t('nav.dashboard') }}</span>
+          <span>{{ t("nav.dashboard") }}</span>
         </router-link>
+
         <router-link to="/download" class="nav-item">
           <span class="nav-icon">↓</span>
-          <span>{{ t('nav.download') }}</span>
-        </router-link>
-        <router-link to="/upload" class="nav-item">
-          <span class="nav-icon">↑</span>
-          <span>{{ t('nav.upload') }}</span>
-        </router-link>
-        <router-link to="/videos" class="nav-item">
-          <span class="nav-icon">▶</span>
-          <span>{{ t('nav.videos') }}</span>
-        </router-link>
-        <router-link to="/queue" class="nav-item">
-          <span class="nav-icon">⊞</span>
-          <span>{{ t('nav.queue') }}</span>
+          <span>{{ t("nav.download") }}</span>
           <span v-if="pendingCount > 0" class="nav-badge">{{ pendingCount }}</span>
         </router-link>
+
+        <router-link to="/upload" class="nav-item">
+          <span class="nav-icon">↑</span>
+          <span>{{ t("nav.upload") }}</span>
+        </router-link>
+
+        <router-link to="/videos" class="nav-item">
+          <span class="nav-icon">▶</span>
+          <span>{{ t("nav.videos") }}</span>
+        </router-link>
+
         <div class="sidebar-spacer" />
+
         <router-link to="/settings" class="nav-item">
           <span class="nav-icon">⚙</span>
-          <span>{{ t('nav.settings') }}</span>
+          <span>{{ t("nav.settings") }}</span>
         </router-link>
 
         <div v-if="yt.isAuthenticated && yt.channelInfo" class="sidebar-channel">
           <div class="channel-avatar">
-            <img v-if="yt.channelInfo.thumbnails?.default?.url" :src="yt.channelInfo.thumbnails.default.url" />
-            <span v-else>{{ yt.channelInfo.title?.[0] || '?' }}</span>
+            <img
+              v-if="yt.channelInfo.thumbnails?.default?.url"
+              :src="yt.channelInfo.thumbnails.default.url"
+            />
+            <span v-else>{{ yt.channelInfo.title?.[0] || "?" }}</span>
           </div>
           <div class="channel-meta">
             <div class="channel-name">{{ yt.channelInfo.title }}</div>
-            <div class="channel-subs">{{ formatNum(yt.channelStats?.subscriberCount) }} {{ t('app.subscribersShort') }}</div>
+            <div class="channel-subs">
+              {{ formatNum(yt.channelStats?.subscriberCount) }}
+              {{ t("app.subscribersShort") }}
+            </div>
           </div>
         </div>
+
         <div v-else-if="yt.isAuthenticated" class="sidebar-channel-loading">
           <div class="pulse-dot" />
-          <span>{{ t('app.loading') }}</span>
+          <span>{{ t("app.loading") }}</span>
         </div>
       </nav>
 
@@ -72,41 +137,6 @@
     </div>
   </div>
 </template>
-
-<script setup>
-import { computed, onMounted } from 'vue'
-import { useYouTubeStore } from '@/stores/youtube'
-import { useQueueStore } from '@/stores/queue'
-import { useI18nStore } from '@/stores/i18n'
-
-const yt = useYouTubeStore()
-const queue = useQueueStore()
-const i18n = useI18nStore()
-const t = i18n.t
-
-const pendingCount = computed(() => queue.items.filter(i => ['pending', 'downloading', 'uploading'].includes(i.status)).length)
-
-function formatNum(n) {
-  if (!n) return '0'
-  const num = parseInt(n)
-  if (num >= 1e6) return (num / 1e6).toFixed(1) + 'M'
-  if (num >= 1e3) return (num / 1e3).toFixed(1) + 'K'
-  return num.toString()
-}
-
-function minimize() { window.electron?.minimize() }
-function maximize() { window.electron?.maximize() }
-function close() { window.electron?.close() }
-
-onMounted(async () => {
-  await i18n.loadLanguage()
-  await yt.loadConfig()
-  if (yt.isAuthenticated) {
-    yt.fetchChannelInfo().catch(() => {})
-    yt.fetchRecentVideos(12).catch(() => {})
-  }
-})
-</script>
 
 <style scoped>
 .app-shell {
@@ -150,7 +180,9 @@ onMounted(async () => {
   color: var(--text);
 }
 
-.titlebar-drag { flex: 1; }
+.titlebar-drag {
+  flex: 1;
+}
 
 .titlebar-language {
   display: flex;
@@ -195,8 +227,14 @@ onMounted(async () => {
   transition: all 0.1s;
 }
 
-.wc:hover { background: var(--surface2); color: var(--text); }
-.wc-close:hover { background: var(--accent) !important; color: white; }
+.wc:hover {
+  background: var(--surface2);
+  color: var(--text);
+}
+.wc-close:hover {
+  background: var(--accent) !important;
+  color: white;
+}
 
 .app-body {
   display: flex;
@@ -230,7 +268,10 @@ onMounted(async () => {
   position: relative;
 }
 
-.nav-item:hover { background: var(--surface); color: var(--text); }
+.nav-item:hover {
+  background: var(--surface);
+  color: var(--text);
+}
 
 .nav-item.router-link-active {
   background: var(--surface2);
@@ -256,7 +297,9 @@ onMounted(async () => {
   font-family: var(--font-mono);
 }
 
-.sidebar-spacer { flex: 1; }
+.sidebar-spacer {
+  flex: 1;
+}
 
 .sidebar-channel {
   margin-top: 8px;
@@ -289,7 +332,9 @@ onMounted(async () => {
   object-fit: cover;
 }
 
-.channel-meta { min-width: 0; }
+.channel-meta {
+  min-width: 0;
+}
 
 .channel-name {
   font-size: 12px;
@@ -323,8 +368,15 @@ onMounted(async () => {
 }
 
 @keyframes pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.4; transform: scale(0.8); }
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.8);
+  }
 }
 
 .main-content {

@@ -13,20 +13,27 @@ export const useQueueStore = defineStore('queue', () => {
     }
   }
 
-  function addItem(url, videoInfo) {
+  function addItem(url, videoInfo, options = {}) {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+
     items.value.push({
       id,
       url,
       videoInfo,
       filePath: null,
       uploadMeta: null,
+      format: options.format || null,
+      outputDir: options.outputDir || null,
       status: 'pending',
       progress: 0,
+      size: '',
       speed: '',
+      etaSeconds: null,
       error: null,
+      startedAt: null,
       createdAt: new Date().toISOString()
     })
+
     return id
   }
 
@@ -40,7 +47,7 @@ export const useQueueStore = defineStore('queue', () => {
   }
 
   function clearDone() {
-    items.value = items.value.filter(i => i.status !== 'done')
+    items.value = items.value.filter(i => !['done', 'downloaded'].includes(i.status))
   }
 
   function clearAll() {
