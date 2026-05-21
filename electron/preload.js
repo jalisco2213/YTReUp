@@ -23,5 +23,13 @@ contextBridge.exposeInMainWorld('electron', {
   writeClipboard: text => ipcRenderer.invoke('clipboard:writeText', text),
   openFile: () => ipcRenderer.invoke('dialog:openFile'),
   openDirectory: () => ipcRenderer.invoke('dialog:openDirectory'),
-  youtubeAuthorize: payload => ipcRenderer.invoke('youtube:authorize', payload)
+  youtubeAuthorize: payload => ipcRenderer.invoke('youtube:authorize', payload),
+  youtubeUploadVideo: payload => ipcRenderer.invoke('youtube:uploadVideo', payload),
+  onYouTubeUploadProgress: cb => {
+    const handler = (_, data) => cb(data)
+    ipcRenderer.on('youtube:upload-progress', handler)
+    return () => ipcRenderer.removeListener('youtube:upload-progress', handler)
+  },
+  fileStat: filePath => ipcRenderer.invoke('file:stat', filePath),
+  readFileChunk: payload => ipcRenderer.invoke('file:readChunk', payload)
 })

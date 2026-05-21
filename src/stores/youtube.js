@@ -440,6 +440,10 @@ export const useYouTubeStore = defineStore('youtube', () => {
     }
   }
 
+  function createUploadSessionId() {
+    return `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  }
+
   async function uploadVideo({
     filePath,
     title,
@@ -456,6 +460,24 @@ export const useYouTubeStore = defineStore('youtube', () => {
     ratingsVisible,
     onProgress
   }) {
+    const targetPath = String(filePath || '').trim()
+
+    if (!targetPath) {
+      throw new Error('Выберите видеофайл')
+    }
+
+    if (!window.electron?.youtubeUploadVideo) {
+      throw new Error('Файловый мост Electron недоступен. Проверь preload.js и перезапусти приложение.')
+    }
+
+    if (!accessToken.value && refreshToken.value) {
+      await refreshAccessToken()
+    }
+
+    if (!accessToken.value) {
+      throw new Error('YouTube is not connected')
+    }
+
     const snippet = {
       title,
       description: description || '',
@@ -473,74 +495,52 @@ export const useYouTubeStore = defineStore('youtube', () => {
       selfDeclaredMadeForKids: !!madeForKids
     }
 
-    if (publishAt && privacyStatus === 'scheduled') status.publishAt = new Date(publishAt).toISOString()
+    if (publishAt && privacyStatus === 'scheduled') {
+      status.publishAt = new Date(publishAt).toISOString()
+    }
 
-    const notifyParam = notifySubscribers !== false ? 'true' : 'false'
+    const sessionId = createUploadSessionId()
+    let removeProgress = null
 
-    const initRes = await apiFetch(`https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status&notifySubscribers=${notifyParam}`, {
-      method: 'POST',
-      headers: {
-        'X-Upload-Content-Type': 'video/mp4',
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ snippet, status })
+    if (window.electron?.onYouTubeUploadProgress && typeof onProgress === 'function') {
+      removeProgress = window.electron.onYouTubeUploadProgress(data => {
+        if (data?.id === sessionId) onProgress(data.percent || 0)
+      })
+    }
+
+    const payload = () => ({
+      sessionId,
+      accessToken: accessToken.value,
+      filePath: targetPath,
+      snippet,
+      status,
+      notifySubscribers: notifySubscribers !== false
     })
 
-    const initData = await readJson(initRes.clone ? initRes.clone() : initRes)
-    const uploadUrl = initRes.headers.get('Location')
+    try {
+      if (typeof onProgress === 'function') onProgress(0)
 
-    if (!initRes.ok || !uploadUrl) {
-      throw new Error(apiError(initData, 'Failed to start upload'))
-    }
+      try {
+        const result = await window.electron.youtubeUploadVideo(payload())
+        if (typeof onProgress === 'function') onProgress(100)
+        if (result?.id) fetchRecentVideos(12).catch(() => {})
+        return result
+      } catch (e) {
+        const message = e.message || String(e)
 
-    const fileRes = await fetch(`file://${filePath}`)
+        if (message.includes('(401)') && refreshToken.value) {
+          await refreshAccessToken()
+          const result = await window.electron.youtubeUploadVideo(payload())
+          if (typeof onProgress === 'function') onProgress(100)
+          if (result?.id) fetchRecentVideos(12).catch(() => {})
+          return result
+        }
 
-    if (!fileRes.ok) {
-      throw new Error('Failed to read video file')
-    }
-
-    const fileBuffer = await fileRes.arrayBuffer()
-    const fileSize = fileBuffer.byteLength
-    const chunkSize = 5 * 1024 * 1024
-
-    let offset = 0
-    let result = null
-
-    while (offset < fileSize) {
-      const end = Math.min(offset + chunkSize, fileSize)
-      const chunk = fileBuffer.slice(offset, end)
-
-      const res = await fetch(uploadUrl, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'video/mp4',
-          'Content-Range': `bytes ${offset}-${end - 1}/${fileSize}`
-        },
-        body: chunk
-      })
-
-      if (res.status === 200 || res.status === 201) {
-        result = await res.json()
-        if (onProgress) onProgress(100)
-        break
+        throw e
       }
-
-      if (res.status === 308) {
-        const range = res.headers.get('Range')
-        offset = range ? parseInt(range.split('-')[1], 10) + 1 : end
-        if (onProgress) onProgress(Math.round((offset / fileSize) * 100))
-        continue
-      }
-
-      const errText = await res.text()
-      throw new Error(`Upload failed (${res.status}): ${errText}`)
+    } finally {
+      removeProgress?.()
     }
-
-    if (result?.id) {
-      fetchRecentVideos(12).catch(() => {})
-    }
-
-    return result
   }
 
   async function uploadThumbnail(videoId, file) {

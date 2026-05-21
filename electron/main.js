@@ -363,6 +363,181 @@ function normalizeFormat(format) {
   return raw
 }
 
+function getMimeByPath(filePath) {
+  const ext = path.extname(String(filePath || '')).toLowerCase()
+  const map = {
+    '.mp4': 'video/mp4',
+    '.m4v': 'video/mp4',
+    '.mov': 'video/quicktime',
+    '.webm': 'video/webm',
+    '.mkv': 'video/x-matroska',
+    '.avi': 'video/x-msvideo'
+  }
+  return map[ext] || 'application/octet-stream'
+}
+
+function requestBuffer(urlString, options = {}) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(urlString)
+    const client = url.protocol === 'http:' ? http : https
+    const body = options.body === undefined || options.body === null
+      ? null
+      : Buffer.isBuffer(options.body)
+        ? options.body
+        : Buffer.from(options.body)
+
+    const headers = { ...(options.headers || {}) }
+
+    if (body && !Object.keys(headers).some(key => key.toLowerCase() === 'content-length')) {
+      headers['Content-Length'] = body.length
+    }
+
+    const req = client.request({
+      protocol: url.protocol,
+      hostname: url.hostname,
+      port: url.port || undefined,
+      path: `${url.pathname}${url.search}`,
+      method: options.method || 'GET',
+      headers
+    }, res => {
+      const chunks = []
+
+      res.on('data', chunk => {
+        chunks.push(chunk)
+      })
+
+      res.on('end', () => {
+        resolve({
+          statusCode: res.statusCode || 0,
+          headers: res.headers || {},
+          body: Buffer.concat(chunks)
+        })
+      })
+    })
+
+    req.on('error', reject)
+
+    req.setTimeout(options.timeout || 0, () => {
+      req.destroy(new Error('Request timeout'))
+    })
+
+    if (body) req.write(body)
+    req.end()
+  })
+}
+
+function parseJsonBuffer(buffer) {
+  const text = Buffer.isBuffer(buffer) ? buffer.toString('utf8') : String(buffer || '')
+  if (!text) return {}
+
+  try {
+    return JSON.parse(text)
+  } catch {
+    return { raw: text }
+  }
+}
+
+function getUploadError(data, fallback) {
+  return data?.error?.message || data?.error_description || data?.error || data?.raw || fallback
+}
+
+function sendYoutubeUploadProgress(id, percent) {
+  mainWindow?.webContents.send('youtube:upload-progress', {
+    id,
+    percent: Math.max(0, Math.min(100, Math.round(Number(percent) || 0)))
+  })
+}
+
+async function uploadVideoToYoutube(payload) {
+  const accessToken = String(payload?.accessToken || '').trim()
+  const filePath = String(payload?.filePath || '').trim()
+  const sessionId = String(payload?.sessionId || crypto.randomUUID())
+  const notifySubscribers = payload?.notifySubscribers !== false ? 'true' : 'false'
+
+  if (!accessToken) throw new Error('YouTube access token is missing')
+  if (!filePath) throw new Error('Путь к файлу не указан')
+
+  const stat = fs.statSync(filePath)
+  if (!stat.isFile()) throw new Error('Выбранный путь не является файлом')
+  if (!stat.size) throw new Error('Файл пустой или недоступен для чтения')
+
+  const mime = getMimeByPath(filePath)
+  const fileSize = stat.size
+  const body = JSON.stringify({ snippet: payload.snippet || {}, status: payload.status || {} })
+
+  sendYoutubeUploadProgress(sessionId, 0)
+
+  const init = await requestBuffer(`https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status&notifySubscribers=${encodeURIComponent(notifySubscribers)}`, {
+    method: 'POST',
+    timeout: 60000,
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'X-Upload-Content-Type': mime,
+      'X-Upload-Content-Length': String(fileSize),
+      'Content-Type': 'application/json; charset=utf-8'
+    },
+    body
+  })
+
+  const uploadUrl = init.headers.location
+
+  if (![200, 201].includes(init.statusCode) || !uploadUrl) {
+    const data = parseJsonBuffer(init.body)
+    throw new Error(`Upload init failed (${init.statusCode}): ${getUploadError(data, 'Failed to start upload')}`)
+  }
+
+  const handle = await fs.promises.open(filePath, 'r')
+  const chunkSize = 8 * 1024 * 1024
+  let offset = 0
+  let result = null
+
+  try {
+    while (offset < fileSize) {
+      const end = Math.min(offset + chunkSize, fileSize)
+      const length = end - offset
+      const buffer = Buffer.alloc(length)
+      const read = await handle.read(buffer, 0, length, offset)
+      const chunk = buffer.subarray(0, read.bytesRead)
+
+      const res = await requestBuffer(uploadUrl, {
+        method: 'PUT',
+        timeout: 0,
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': mime,
+          'Content-Length': String(chunk.length),
+          'Content-Range': `bytes ${offset}-${offset + chunk.length - 1}/${fileSize}`
+        },
+        body: chunk
+      })
+
+      if ([200, 201].includes(res.statusCode)) {
+        result = parseJsonBuffer(res.body)
+        sendYoutubeUploadProgress(sessionId, 100)
+        break
+      }
+
+      if (res.statusCode === 308) {
+        const range = res.headers.range
+        offset = range ? Number(String(range).split('-').pop()) + 1 : end
+        sendYoutubeUploadProgress(sessionId, (offset / fileSize) * 100)
+        continue
+      }
+
+      const data = parseJsonBuffer(res.body)
+      throw new Error(`Upload failed (${res.statusCode}): ${getUploadError(data, 'Failed to upload video')}`)
+    }
+  } finally {
+    await handle.close()
+  }
+
+  if (!result?.id) {
+    throw new Error('YouTube не вернул ID загруженного видео')
+  }
+
+  return result
+}
+
 ipcMain.handle('ytdlp:info', async (event, url) => {
   const ytdlpPath = await ensureYtDlpPath()
 
@@ -545,6 +720,45 @@ ipcMain.handle('ytdlp:download', async (event, { url, outputDir, format }) => {
       finish(null, { filePath: lastFile })
     })
   })
+})
+
+ipcMain.handle('youtube:uploadVideo', async (event, payload) => uploadVideoToYoutube(payload))
+
+ipcMain.handle('file:stat', async (event, filePath) => {
+  const target = String(filePath || '').trim()
+
+  if (!target) throw new Error('Путь к файлу не указан')
+
+  const stat = fs.statSync(target)
+
+  if (!stat.isFile()) throw new Error('Выбранный путь не является файлом')
+
+  return {
+    size: stat.size,
+    name: path.basename(target),
+    mime: getMimeByPath(target)
+  }
+})
+
+ipcMain.handle('file:readChunk', async (event, payload) => {
+  const filePath = String(payload?.filePath || '').trim()
+  const start = Math.max(0, Number(payload?.start || 0))
+  const end = Math.max(start, Number(payload?.end || 0))
+  const length = Math.max(0, end - start)
+
+  if (!filePath) throw new Error('Путь к файлу не указан')
+  if (!length) return new ArrayBuffer(0)
+
+  const handle = await fs.promises.open(filePath, 'r')
+
+  try {
+    const buffer = Buffer.alloc(length)
+    const result = await handle.read(buffer, 0, length, start)
+    const chunk = buffer.subarray(0, result.bytesRead)
+    return chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength)
+  } finally {
+    await handle.close()
+  }
 })
 
 const configPath = path.join(app.getPath('userData'), 'config.json')
