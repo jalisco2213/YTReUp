@@ -1,13 +1,33 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 
+function parseDuration(value) {
+  if (!value) return 0
+  const match = String(value).match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/)
+  if (!match) return 0
+  return (parseInt(match[1] || '0') * 3600) + (parseInt(match[2] || '0') * 60) + parseInt(match[3] || '0')
+}
+
+function normalizeVideo(video) {
+  const seconds = parseDuration(video?.contentDetails?.duration)
+  return {
+    ...video,
+    durationSeconds: seconds,
+    videoType: seconds > 0 && seconds <= 60 ? 'shorts' : 'video'
+  }
+}
+
 export const useYouTubeStore = defineStore('youtube', () => {
   const accessToken = ref(null)
   const refreshToken = ref(null)
   const channelInfo = ref(null)
   const channelStats = ref(null)
   const recentVideos = ref([])
+  const videos = ref([])
+  const videosNextPageToken = ref('')
+  const selectedVideo = ref(null)
   const isLoading = ref(false)
+  const isSaving = ref(false)
   const error = ref(null)
 
   const CLIENT_ID = ref('')
@@ -48,14 +68,14 @@ export const useYouTubeStore = defineStore('youtube', () => {
     const cfg = await loadConfigSafe()
     const changed = cfg.clientId !== nextClientId || cfg.clientSecret !== nextClientSecret
 
+    CLIENT_ID.value = nextClientId
+    CLIENT_SECRET.value = nextClientSecret
+
     const nextConfig = {
       ...cfg,
       clientId: nextClientId,
       clientSecret: nextClientSecret
     }
-
-    CLIENT_ID.value = nextClientId
-    CLIENT_SECRET.value = nextClientSecret
 
     if (changed) {
       nextConfig.accessToken = null
@@ -65,6 +85,9 @@ export const useYouTubeStore = defineStore('youtube', () => {
       channelInfo.value = null
       channelStats.value = null
       recentVideos.value = []
+      videos.value = []
+      selectedVideo.value = null
+      videosNextPageToken.value = ''
     }
 
     await window.electron.saveConfig(nextConfig)
@@ -96,8 +119,8 @@ export const useYouTubeStore = defineStore('youtube', () => {
 
       await saveTokens(data.accessToken, data.refreshToken || refreshToken.value)
       await fetchChannelInfo()
-      await fetchRecentVideos()
-
+      await fetchRecentVideos(12)
+      await fetchVideos({ maxResults: 25 })
       return data
     } catch (e) {
       error.value = e.message || 'Authorization failed'
@@ -134,7 +157,6 @@ export const useYouTubeStore = defineStore('youtube', () => {
     }
 
     await saveTokens(data.access_token, refreshToken.value)
-
     return data
   }
 
@@ -167,7 +189,6 @@ export const useYouTubeStore = defineStore('youtube', () => {
 
   async function readJson(res) {
     const text = await res.text()
-
     if (!text) return {}
 
     try {
@@ -181,12 +202,20 @@ export const useYouTubeStore = defineStore('youtube', () => {
     return data?.error?.message || data?.error_description || data?.error || fallback
   }
 
+  function buildUrl(endpoint, params) {
+    const url = new URL(endpoint)
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, value)
+    })
+    return url.toString()
+  }
+
   async function fetchChannelInfo() {
     isLoading.value = true
     error.value = null
 
     try {
-      const res = await apiFetch('https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,brandingSettings&mine=true')
+      const res = await apiFetch('https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,brandingSettings,contentDetails&mine=true')
       const data = await readJson(res)
 
       if (!res.ok) {
@@ -199,7 +228,6 @@ export const useYouTubeStore = defineStore('youtube', () => {
 
       channelInfo.value = data.items[0].snippet
       channelStats.value = data.items[0].statistics
-
       return data.items[0]
     } catch (e) {
       error.value = e.message
@@ -209,54 +237,206 @@ export const useYouTubeStore = defineStore('youtube', () => {
     }
   }
 
-  async function fetchRecentVideos(maxResults = 10) {
+  async function getUploadsPlaylistId() {
+    const res = await apiFetch('https://www.googleapis.com/youtube/v3/channels?part=contentDetails&mine=true')
+    const data = await readJson(res)
+
+    if (!res.ok) {
+      throw new Error(apiError(data, 'Failed to fetch channel uploads playlist'))
+    }
+
+    return data.items?.[0]?.contentDetails?.relatedPlaylists?.uploads || ''
+  }
+
+  async function fetchVideosByIds(ids) {
+    const cleanIds = Array.isArray(ids) ? ids.filter(Boolean) : []
+    if (!cleanIds.length) return []
+
+    const res = await apiFetch(buildUrl('https://www.googleapis.com/youtube/v3/videos', {
+      part: 'snippet,statistics,status,contentDetails,recordingDetails,localizations',
+      id: cleanIds.join(',')
+    }))
+    const data = await readJson(res)
+
+    if (!res.ok) {
+      throw new Error(apiError(data, 'Failed to fetch videos'))
+    }
+
+    return (data.items || []).map(normalizeVideo)
+  }
+
+  async function fetchRecentVideos(maxResults = 12) {
     isLoading.value = true
     error.value = null
 
     try {
-      const chRes = await apiFetch('https://www.googleapis.com/youtube/v3/channels?part=contentDetails&mine=true')
-      const chData = await readJson(chRes)
-
-      if (!chRes.ok) {
-        throw new Error(apiError(chData, 'Failed to fetch channel uploads playlist'))
-      }
-
-      const uploadsId = chData.items?.[0]?.contentDetails?.relatedPlaylists?.uploads
-
+      const uploadsId = await getUploadsPlaylistId()
       if (!uploadsId) {
         recentVideos.value = []
         return []
       }
 
-      const plRes = await apiFetch(`https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${encodeURIComponent(uploadsId)}&maxResults=${maxResults}`)
+      const plRes = await apiFetch(buildUrl('https://www.googleapis.com/youtube/v3/playlistItems', {
+        part: 'snippet,contentDetails',
+        playlistId: uploadsId,
+        maxResults: Math.min(Math.max(parseInt(maxResults || 12), 1), 50)
+      }))
       const plData = await readJson(plRes)
 
       if (!plRes.ok) {
         throw new Error(apiError(plData, 'Failed to fetch recent videos'))
       }
 
-      const ids = plData.items?.map(i => i.contentDetails.videoId).filter(Boolean).join(',')
-
-      if (!ids) {
-        recentVideos.value = []
-        return []
-      }
-
-      const vRes = await apiFetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,status&id=${encodeURIComponent(ids)}`)
-      const vData = await readJson(vRes)
-
-      if (!vRes.ok) {
-        throw new Error(apiError(vData, 'Failed to fetch videos'))
-      }
-
-      recentVideos.value = vData.items || []
-
+      const ids = plData.items?.map(i => i.contentDetails?.videoId).filter(Boolean) || []
+      recentVideos.value = await fetchVideosByIds(ids)
       return recentVideos.value
     } catch (e) {
       error.value = e.message
       throw e
     } finally {
       isLoading.value = false
+    }
+  }
+
+  async function fetchVideos({ maxResults = 25, pageToken = '', append = false, query = '' } = {}) {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const limit = Math.min(Math.max(parseInt(maxResults || 25), 1), 50)
+      let ids = []
+      let next = ''
+
+      if (String(query || '').trim()) {
+        const searchRes = await apiFetch(buildUrl('https://www.googleapis.com/youtube/v3/search', {
+          part: 'snippet',
+          forMine: 'true',
+          type: 'video',
+          q: String(query).trim(),
+          maxResults: limit,
+          pageToken
+        }))
+        const searchData = await readJson(searchRes)
+
+        if (!searchRes.ok) {
+          throw new Error(apiError(searchData, 'Failed to search videos'))
+        }
+
+        ids = searchData.items?.map(i => i.id?.videoId).filter(Boolean) || []
+        next = searchData.nextPageToken || ''
+      } else {
+        const uploadsId = await getUploadsPlaylistId()
+        if (!uploadsId) {
+          videos.value = []
+          videosNextPageToken.value = ''
+          return []
+        }
+
+        const plRes = await apiFetch(buildUrl('https://www.googleapis.com/youtube/v3/playlistItems', {
+          part: 'snippet,contentDetails',
+          playlistId: uploadsId,
+          maxResults: limit,
+          pageToken
+        }))
+        const plData = await readJson(plRes)
+
+        if (!plRes.ok) {
+          throw new Error(apiError(plData, 'Failed to fetch videos'))
+        }
+
+        ids = plData.items?.map(i => i.contentDetails?.videoId).filter(Boolean) || []
+        next = plData.nextPageToken || ''
+      }
+
+      const list = await fetchVideosByIds(ids)
+      videos.value = append ? [...videos.value, ...list] : list
+      videosNextPageToken.value = next
+      return videos.value
+    } catch (e) {
+      error.value = e.message
+      throw e
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function fetchVideoDetails(videoId) {
+    if (!videoId) throw new Error('Video ID is required')
+
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const list = await fetchVideosByIds([videoId])
+      if (!list.length) throw new Error('Video not found')
+      selectedVideo.value = list[0]
+      return list[0]
+    } catch (e) {
+      error.value = e.message
+      throw e
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  function buildVideoPayload(currentVideo, patch) {
+    const snippet = {
+      title: patch.title ?? currentVideo?.snippet?.title ?? '',
+      description: patch.description ?? currentVideo?.snippet?.description ?? '',
+      tags: Array.isArray(patch.tags) ? patch.tags : (currentVideo?.snippet?.tags || []),
+      categoryId: patch.categoryId ?? currentVideo?.snippet?.categoryId ?? '22'
+    }
+
+    const defaultLanguage = patch.defaultLanguage ?? currentVideo?.snippet?.defaultLanguage
+    if (defaultLanguage) snippet.defaultLanguage = defaultLanguage
+
+    const status = {
+      privacyStatus: patch.privacyStatus ?? currentVideo?.status?.privacyStatus ?? 'private',
+      license: patch.license ?? currentVideo?.status?.license ?? 'youtube',
+      embeddable: patch.embeddable ?? currentVideo?.status?.embeddable ?? true,
+      publicStatsViewable: patch.ratingsVisible ?? currentVideo?.status?.publicStatsViewable ?? true,
+      selfDeclaredMadeForKids: patch.madeForKids ?? currentVideo?.status?.selfDeclaredMadeForKids ?? false
+    }
+
+    const publishAt = patch.publishAt ?? currentVideo?.status?.publishAt
+    if (publishAt && status.privacyStatus === 'private') status.publishAt = publishAt
+
+    return {
+      id: currentVideo.id,
+      snippet,
+      status
+    }
+  }
+
+  async function updateVideo(videoId, patch) {
+    isSaving.value = true
+    error.value = null
+
+    try {
+      const current = selectedVideo.value?.id === videoId ? selectedVideo.value : await fetchVideoDetails(videoId)
+      const payload = buildVideoPayload(current, patch)
+
+      const res = await apiFetch('https://www.googleapis.com/youtube/v3/videos?part=snippet,status', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      const data = await readJson(res)
+
+      if (!res.ok) {
+        throw new Error(apiError(data, 'Failed to update video'))
+      }
+
+      const normalized = normalizeVideo(data)
+      selectedVideo.value = normalized
+      videos.value = videos.value.map(v => v.id === normalized.id ? normalized : v)
+      recentVideos.value = recentVideos.value.map(v => v.id === normalized.id ? normalized : v)
+      return normalized
+    } catch (e) {
+      error.value = e.message
+      throw e
+    } finally {
+      isSaving.value = false
     }
   }
 
@@ -283,21 +463,17 @@ export const useYouTubeStore = defineStore('youtube', () => {
       categoryId: categoryId || '22'
     }
 
-    if (defaultLanguage) {
-      snippet.defaultLanguage = defaultLanguage
-    }
+    if (defaultLanguage) snippet.defaultLanguage = defaultLanguage
 
     const status = {
-      privacyStatus: privacyStatus || 'private',
+      privacyStatus: privacyStatus === 'scheduled' ? 'private' : (privacyStatus || 'private'),
       license: license || 'youtube',
       embeddable: embeddable !== false,
       publicStatsViewable: ratingsVisible !== false,
       selfDeclaredMadeForKids: !!madeForKids
     }
 
-    if (publishAt) {
-      status.publishAt = publishAt
-    }
+    if (publishAt && privacyStatus === 'scheduled') status.publishAt = new Date(publishAt).toISOString()
 
     const notifyParam = notifySubscribers !== false ? 'true' : 'false'
 
@@ -310,16 +486,11 @@ export const useYouTubeStore = defineStore('youtube', () => {
       body: JSON.stringify({ snippet, status })
     })
 
-    const initData = await readJson(initRes)
-
-    if (!initRes.ok) {
-      throw new Error(apiError(initData, 'Failed to start upload'))
-    }
-
+    const initData = await readJson(initRes.clone ? initRes.clone() : initRes)
     const uploadUrl = initRes.headers.get('Location')
 
-    if (!uploadUrl) {
-      throw new Error('Failed to get upload URL')
+    if (!initRes.ok || !uploadUrl) {
+      throw new Error(apiError(initData, 'Failed to start upload'))
     }
 
     const fileRes = await fetch(`file://${filePath}`)
@@ -365,6 +536,10 @@ export const useYouTubeStore = defineStore('youtube', () => {
       throw new Error(`Upload failed (${res.status}): ${errText}`)
     }
 
+    if (result?.id) {
+      fetchRecentVideos(12).catch(() => {})
+    }
+
     return result
   }
 
@@ -373,9 +548,7 @@ export const useYouTubeStore = defineStore('youtube', () => {
 
     const res = await apiFetch(`https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId=${encodeURIComponent(videoId)}&uploadType=media`, {
       method: 'POST',
-      headers: {
-        'Content-Type': file.type || 'image/jpeg'
-      },
+      headers: { 'Content-Type': file.type || 'image/jpeg' },
       body: buf
     })
 
@@ -394,6 +567,9 @@ export const useYouTubeStore = defineStore('youtube', () => {
     channelInfo.value = null
     channelStats.value = null
     recentVideos.value = []
+    videos.value = []
+    selectedVideo.value = null
+    videosNextPageToken.value = ''
     await saveConfigPatch({ accessToken: null, refreshToken: null })
   }
 
@@ -403,7 +579,11 @@ export const useYouTubeStore = defineStore('youtube', () => {
     channelInfo,
     channelStats,
     recentVideos,
+    videos,
+    videosNextPageToken,
+    selectedVideo,
     isLoading,
+    isSaving,
     error,
     isAuthenticated,
     hasCredentials,
@@ -416,8 +596,12 @@ export const useYouTubeStore = defineStore('youtube', () => {
     refreshAccessToken,
     fetchChannelInfo,
     fetchRecentVideos,
+    fetchVideos,
+    fetchVideoDetails,
+    updateVideo,
     uploadVideo,
     uploadThumbnail,
-    logout
+    logout,
+    parseDuration
   }
 })

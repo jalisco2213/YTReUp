@@ -1,60 +1,67 @@
 <template>
   <div class="app-shell">
-    <!-- Custom titlebar -->
     <div class="titlebar" @dblclick="maximize">
       <div class="titlebar-logo">
         <span class="logo-icon">▲</span>
         <span class="logo-text">YTREUP</span>
       </div>
       <div class="titlebar-drag" />
+      <div class="titlebar-language">
+        <button class="lang-btn" :class="{ active: i18n.language === 'ru' }" @click.stop="i18n.setLanguage('ru')">RU</button>
+        <button class="lang-btn" :class="{ active: i18n.language === 'en' }" @click.stop="i18n.setLanguage('en')">EN</button>
+      </div>
       <div class="titlebar-controls">
-        <button class="wc wc-min" @click="minimize" title="Minimise">—</button>
-        <button class="wc wc-max" @click="maximize" title="Maximise">&#9633;</button>
-        <button class="wc wc-close" @click="close" title="Close">✕</button>
+        <button class="wc wc-min" @click="minimize">—</button>
+        <button class="wc wc-max" @click="maximize">□</button>
+        <button class="wc wc-close" @click="close">✕</button>
       </div>
     </div>
 
     <div class="app-body">
-      <!-- Sidebar -->
       <nav class="sidebar">
         <router-link to="/dashboard" class="nav-item">
           <span class="nav-icon">◈</span>
-          <span>Dashboard</span>
+          <span>{{ t('nav.dashboard') }}</span>
         </router-link>
         <router-link to="/download" class="nav-item">
           <span class="nav-icon">↓</span>
-          <span>Download</span>
+          <span>{{ t('nav.download') }}</span>
         </router-link>
         <router-link to="/upload" class="nav-item">
           <span class="nav-icon">↑</span>
-          <span>Upload</span>
+          <span>{{ t('nav.upload') }}</span>
+        </router-link>
+        <router-link to="/videos" class="nav-item">
+          <span class="nav-icon">▶</span>
+          <span>{{ t('nav.videos') }}</span>
         </router-link>
         <router-link to="/queue" class="nav-item">
           <span class="nav-icon">⊞</span>
-          <span>Queue</span>
+          <span>{{ t('nav.queue') }}</span>
           <span v-if="pendingCount > 0" class="nav-badge">{{ pendingCount }}</span>
         </router-link>
         <div class="sidebar-spacer" />
         <router-link to="/settings" class="nav-item">
           <span class="nav-icon">⚙</span>
-          <span>Settings</span>
+          <span>{{ t('nav.settings') }}</span>
         </router-link>
 
-        <!-- Channel mini info -->
         <div v-if="yt.isAuthenticated && yt.channelInfo" class="sidebar-channel">
-          <div class="channel-avatar">{{ yt.channelInfo.title?.[0] || '?' }}</div>
+          <div class="channel-avatar">
+            <img v-if="yt.channelInfo.thumbnails?.default?.url" :src="yt.channelInfo.thumbnails.default.url" />
+            <span v-else>{{ yt.channelInfo.title?.[0] || '?' }}</span>
+          </div>
           <div class="channel-meta">
             <div class="channel-name">{{ yt.channelInfo.title }}</div>
-            <div class="channel-subs">{{ formatNum(yt.channelStats?.subscriberCount) }} subs</div>
+            <div class="channel-subs">{{ formatNum(yt.channelStats?.subscriberCount) }} {{ t('app.subscribersShort') }}</div>
           </div>
         </div>
         <div v-else-if="yt.isAuthenticated" class="sidebar-channel-loading">
           <div class="pulse-dot" />
-          <span>Loading...</span>
+          <span>{{ t('app.loading') }}</span>
         </div>
       </nav>
 
-      <!-- Main content -->
       <main class="main-content">
         <router-view v-slot="{ Component }">
           <transition name="fade" mode="out-in">
@@ -70,13 +77,14 @@
 import { computed, onMounted } from 'vue'
 import { useYouTubeStore } from '@/stores/youtube'
 import { useQueueStore } from '@/stores/queue'
+import { useI18nStore } from '@/stores/i18n'
 
 const yt = useYouTubeStore()
 const queue = useQueueStore()
+const i18n = useI18nStore()
+const t = i18n.t
 
-const pendingCount = computed(() =>
-  queue.items.filter(i => ['pending','downloading','uploading'].includes(i.status)).length
-)
+const pendingCount = computed(() => queue.items.filter(i => ['pending', 'downloading', 'uploading'].includes(i.status)).length)
 
 function formatNum(n) {
   if (!n) return '0'
@@ -91,10 +99,11 @@ function maximize() { window.electron?.maximize() }
 function close() { window.electron?.close() }
 
 onMounted(async () => {
+  await i18n.loadLanguage()
   await yt.loadConfig()
   if (yt.isAuthenticated) {
-    yt.fetchChannelInfo()
-    yt.fetchRecentVideos()
+    yt.fetchChannelInfo().catch(() => {})
+    yt.fetchRecentVideos(12).catch(() => {})
   }
 })
 </script>
@@ -108,7 +117,6 @@ onMounted(async () => {
   background: var(--bg);
 }
 
-/* Titlebar */
 .titlebar {
   height: 40px;
   background: var(--bg2);
@@ -121,16 +129,19 @@ onMounted(async () => {
   padding: 0 12px;
   gap: 12px;
 }
+
 .titlebar-logo {
   display: flex;
   align-items: center;
   gap: 8px;
   -webkit-app-region: no-drag;
 }
+
 .logo-icon {
   color: var(--accent);
   font-size: 14px;
 }
+
 .logo-text {
   font-family: var(--font-mono);
   font-weight: 700;
@@ -138,12 +149,38 @@ onMounted(async () => {
   letter-spacing: 0.2em;
   color: var(--text);
 }
+
 .titlebar-drag { flex: 1; }
+
+.titlebar-language {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  -webkit-app-region: no-drag;
+}
+
+.lang-btn {
+  height: 24px;
+  padding: 0 8px;
+  background: transparent;
+  color: var(--text2);
+  border: 1px solid transparent;
+  font-size: 10px;
+  font-family: var(--font-mono);
+}
+
+.lang-btn.active {
+  color: var(--text);
+  border-color: var(--border2);
+  background: var(--surface);
+}
+
 .titlebar-controls {
   display: flex;
   gap: 4px;
   -webkit-app-region: no-drag;
 }
+
 .wc {
   width: 28px;
   height: 24px;
@@ -157,19 +194,18 @@ onMounted(async () => {
   justify-content: center;
   transition: all 0.1s;
 }
+
 .wc:hover { background: var(--surface2); color: var(--text); }
 .wc-close:hover { background: var(--accent) !important; color: white; }
 
-/* Body */
 .app-body {
   display: flex;
   flex: 1;
   overflow: hidden;
 }
 
-/* Sidebar */
 .sidebar {
-  width: 200px;
+  width: 210px;
   background: var(--bg2);
   border-right: 1px solid var(--border);
   display: flex;
@@ -179,6 +215,7 @@ onMounted(async () => {
   flex-shrink: 0;
   overflow-y: auto;
 }
+
 .nav-item {
   display: flex;
   align-items: center;
@@ -192,18 +229,22 @@ onMounted(async () => {
   transition: all 0.12s;
   position: relative;
 }
+
 .nav-item:hover { background: var(--surface); color: var(--text); }
+
 .nav-item.router-link-active {
   background: var(--surface2);
   color: var(--text);
   border-left: 2px solid var(--accent);
 }
+
 .nav-icon {
   font-size: 15px;
   width: 18px;
   text-align: center;
   color: inherit;
 }
+
 .nav-badge {
   margin-left: auto;
   background: var(--accent);
@@ -214,6 +255,7 @@ onMounted(async () => {
   border-radius: 99px;
   font-family: var(--font-mono);
 }
+
 .sidebar-spacer { flex: 1; }
 
 .sidebar-channel {
@@ -226,19 +268,29 @@ onMounted(async () => {
   align-items: center;
   gap: 10px;
 }
+
 .channel-avatar {
   width: 32px;
   height: 32px;
   border-radius: 50%;
-  background: linear-gradient(135deg, var(--accent3), var(--accent));
+  background: var(--surface2);
   display: flex;
   align-items: center;
   justify-content: center;
   font-weight: 800;
   font-size: 14px;
   flex-shrink: 0;
+  overflow: hidden;
 }
+
+.channel-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
 .channel-meta { min-width: 0; }
+
 .channel-name {
   font-size: 12px;
   font-weight: 700;
@@ -246,11 +298,13 @@ onMounted(async () => {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
 .channel-subs {
   font-size: 11px;
   color: var(--text2);
   font-family: var(--font-mono);
 }
+
 .sidebar-channel-loading {
   display: flex;
   align-items: center;
@@ -259,6 +313,7 @@ onMounted(async () => {
   color: var(--text2);
   font-size: 12px;
 }
+
 .pulse-dot {
   width: 8px;
   height: 8px;
@@ -266,12 +321,12 @@ onMounted(async () => {
   background: var(--accent3);
   animation: pulse 1s infinite;
 }
+
 @keyframes pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.4; transform: scale(0.8); }
 }
 
-/* Main */
 .main-content {
   flex: 1;
   overflow: hidden;

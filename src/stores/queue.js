@@ -1,8 +1,17 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 
 export const useQueueStore = defineStore('queue', () => {
-  const items = ref([]) // { id, url, videoInfo, filePath, uploadMeta, status, progress, error, createdAt }
+  const items = ref([])
+
+  function loadQueue() {
+    try {
+      const raw = localStorage.getItem('ytreup.queue')
+      items.value = raw ? JSON.parse(raw) : []
+    } catch {
+      items.value = []
+    }
+  }
 
   function addItem(url, videoInfo) {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -12,11 +21,11 @@ export const useQueueStore = defineStore('queue', () => {
       videoInfo,
       filePath: null,
       uploadMeta: null,
-      status: 'pending', // pending | downloading | downloaded | uploading | done | error
+      status: 'pending',
       progress: 0,
       speed: '',
       error: null,
-      createdAt: new Date().toISOString(),
+      createdAt: new Date().toISOString()
     })
     return id
   }
@@ -34,5 +43,17 @@ export const useQueueStore = defineStore('queue', () => {
     items.value = items.value.filter(i => i.status !== 'done')
   }
 
-  return { items, addItem, updateItem, removeItem, clearDone }
+  function clearAll() {
+    items.value = []
+  }
+
+  loadQueue()
+
+  watch(items, value => {
+    try {
+      localStorage.setItem('ytreup.queue', JSON.stringify(value))
+    } catch {}
+  }, { deep: true })
+
+  return { items, loadQueue, addItem, updateItem, removeItem, clearDone, clearAll }
 })

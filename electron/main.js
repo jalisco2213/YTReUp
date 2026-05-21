@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell } = require('electron')
+const { app, BrowserWindow, ipcMain, shell, dialog, clipboard } = require('electron')
 const path = require('path')
 const { spawn } = require('child_process')
 const fs = require('fs')
@@ -22,9 +22,9 @@ function createWindow() {
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
-      nodeIntegration: false,
+      nodeIntegration: false
     },
-    icon: path.join(__dirname, '../public/icon.png'),
+    icon: path.join(__dirname, '../public/icon.png')
   })
 
   if (isDev) {
@@ -59,12 +59,7 @@ function getYtDlpPath() {
 
 ipcMain.handle('ytdlp:info', async (event, url) => {
   return new Promise((resolve, reject) => {
-    const ytdlp = spawn(getYtDlpPath(), [
-      '--dump-json',
-      '--no-playlist',
-      url
-    ])
-
+    const ytdlp = spawn(getYtDlpPath(), ['--dump-json', '--no-playlist', url])
     let stdout = ''
     let stderr = ''
 
@@ -102,17 +97,18 @@ ipcMain.handle('ytdlp:download', async (event, { url, outputDir, format }) => {
 
     const ytdlp = spawn(getYtDlpPath(), args)
     let lastFile = ''
+    let stderr = ''
 
     ytdlp.stdout.on('data', data => {
       const lines = data.toString().split(/\r?\n/).filter(Boolean)
 
       for (const line of lines) {
-        const progressMatch = line.match(/\[download\]\s+([\d.]+)%\s+of\s+([\d.]+\w+)\s+at\s+([\d.]+\w+\/s)/)
+        const progressMatch = line.match(/\[download\]\s+([\d.]+)%\s+of\s+([^\s]+)\s+at\s+([^\s]+)/)
         if (progressMatch) {
           mainWindow?.webContents.send('ytdlp:progress', {
             percent: parseFloat(progressMatch[1]),
             size: progressMatch[2],
-            speed: progressMatch[3],
+            speed: progressMatch[3]
           })
         }
 
@@ -125,11 +121,12 @@ ipcMain.handle('ytdlp:download', async (event, { url, outputDir, format }) => {
     })
 
     ytdlp.stderr.on('data', d => {
+      stderr += d.toString()
       mainWindow?.webContents.send('ytdlp:log', d.toString())
     })
 
     ytdlp.on('close', code => {
-      if (code !== 0) return reject(new Error('Download failed'))
+      if (code !== 0) return reject(new Error(stderr || 'Download failed'))
 
       if (!lastFile) {
         const files = fs.readdirSync(dir)
@@ -162,10 +159,29 @@ function writeConfig(data) {
 }
 
 ipcMain.handle('config:load', () => readConfig())
-
 ipcMain.handle('config:save', (event, data) => writeConfig(data))
-
 ipcMain.handle('shell:openPath', (event, p) => shell.openPath(p))
+ipcMain.handle('shell:openExternal', (event, url) => shell.openExternal(url))
+ipcMain.handle('clipboard:writeText', (event, text) => clipboard.writeText(String(text || '')))
+
+ipcMain.handle('dialog:openFile', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openFile'],
+    filters: [
+      { name: 'Video', extensions: ['mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v'] },
+      { name: 'All files', extensions: ['*'] }
+    ]
+  })
+
+  if (result.canceled || !result.filePaths?.length) return null
+  return result.filePaths[0]
+})
+
+ipcMain.handle('dialog:openDirectory', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory', 'createDirectory'] })
+  if (result.canceled || !result.filePaths?.length) return null
+  return result.filePaths[0]
+})
 
 function base64Url(buffer) {
   return buffer
@@ -195,14 +211,8 @@ h1{margin:0 0 12px;font-size:24px}
 p{margin:0;color:#9090b0;line-height:1.6}
 </style>
 </head>
-<body>
-<div class="box">
-<h1>${title}</h1>
-<p>${text}</p>
-</div>
-</body>
-</html>
-`
+<body><div class="box"><h1>${title}</h1><p>${text}</p></div></body>
+</html>`
 }
 
 function waitForOAuthCode({ clientId, scope }) {
@@ -214,20 +224,6 @@ function waitForOAuthCode({ clientId, scope }) {
     let timeout = null
     let redirectUri = ''
     let localOrigin = ''
-
-    function finish(err, result) {
-      if (completed) return
-      completed = true
-
-      if (timeout) clearTimeout(timeout)
-
-      try {
-        server.close()
-      } catch {}
-
-      if (err) reject(err)
-      else resolve(result)
-    }
 
     const server = http.createServer((req, res) => {
       try {
@@ -282,6 +278,20 @@ function waitForOAuthCode({ clientId, scope }) {
         finish(e)
       }
     })
+
+    function finish(err, result) {
+      if (completed) return
+      completed = true
+
+      if (timeout) clearTimeout(timeout)
+
+      try {
+        server.close()
+      } catch {}
+
+      if (err) reject(err)
+      else resolve(result)
+    }
 
     server.on('error', err => finish(err))
 
@@ -364,7 +374,8 @@ ipcMain.handle('youtube:authorize', async (event, payload) => {
 
   const scope = [
     'https://www.googleapis.com/auth/youtube.upload',
-    'https://www.googleapis.com/auth/youtube.readonly'
+    'https://www.googleapis.com/auth/youtube.readonly',
+    'https://www.googleapis.com/auth/youtube'
   ].join(' ')
 
   const { code, redirectUri, codeVerifier } = await waitForOAuthCode({ clientId, scope })
