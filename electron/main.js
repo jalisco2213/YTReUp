@@ -291,6 +291,35 @@ function createYtDlpProcess(command, params) {
   })
 }
 
+function parseProgressLine(line) {
+  const percentMatch = line.match(/\[download\]\s+([\d.]+)%/i)
+  if (!percentMatch) return null
+
+  const sizeMatch = line.match(/\s+of\s+~?\s*([0-9.]+[A-Za-z]+(?:i?B)?)/i)
+  const speedMatch = line.match(/\s+at\s+([^\s]+\/s)/i)
+  const etaMatch = line.match(/\s+ETA\s+([0-9:]+)/i)
+
+  return {
+    percent: Number.parseFloat(percentMatch[1]),
+    size: sizeMatch?.[1] || '',
+    speed: speedMatch?.[1] || '',
+    eta: etaMatch?.[1] || ''
+  }
+}
+
+function normalizeFormat(format) {
+  const formats = {
+    best: 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best',
+    '2160': 'bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=2160]+bestaudio/best[height<=2160]',
+    '1440': 'bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1440]+bestaudio/best[height<=1440]',
+    '1080': 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]',
+    '720': 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]',
+    '480': 'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480]'
+  }
+
+  return formats[String(format || '').trim()] || format || formats.best
+}
+
 ipcMain.handle('ytdlp:info', async (event, url) => {
   const ytdlpPath = await ensureYtDlpPath()
 
@@ -304,7 +333,6 @@ ipcMain.handle('ytdlp:info', async (event, url) => {
     function finish(err, data) {
       if (done) return
       done = true
-
       if (err) reject(err)
       else resolve(data)
     }
@@ -354,21 +382,26 @@ ipcMain.handle('ytdlp:download', async (event, { url, outputDir, format }) => {
 
     const outTemplate = path.join(dir, '%(title).80s-%(id)s.%(ext)s')
     const ffmpegPath = getFfmpegPath()
-    const hasFfmpeg = Boolean(ffmpegPath)
-    const requestedFormat = format || 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
-    const finalFormat = !hasFfmpeg && requestedFormat.includes('+') ? 'best[ext=mp4]/best' : requestedFormat
+    const finalFormat = normalizeFormat(format)
+
+    if (!ffmpegPath && finalFormat.includes('+')) {
+      reject(new Error('Для скачивания в хорошем качестве нужен ffmpeg. Положи ffmpeg рядом с yt-dlp в папку bin или установи ffmpeg в систему. Без него YouTube часто отдаёт только мыльный одиночный mp4.'))
+      return
+    }
 
     const args = [
       '--no-playlist',
       '--restrict-filenames',
       '--windows-filenames',
+      '--newline',
+      '--progress',
+      '--no-mtime',
       '-f',
       finalFormat,
       '--merge-output-format',
       'mp4',
       '-o',
-      outTemplate,
-      '--newline'
+      outTemplate
     ]
 
     if (ffmpegPath && ffmpegPath !== 'ffmpeg') {
@@ -377,9 +410,12 @@ ipcMain.handle('ytdlp:download', async (event, { url, outputDir, format }) => {
 
     args.push(url)
 
-    if (!hasFfmpeg && requestedFormat.includes('+')) {
-      mainWindow?.webContents.send('ytdlp:log', 'ffmpeg не найден, используется совместимый MP4-формат без склейки видео и аудио.')
-    }
+    mainWindow?.webContents.send('ytdlp:progress', {
+      percent: 0,
+      size: '',
+      speed: '',
+      eta: ''
+    })
 
     const ytdlp = createYtDlpProcess(ytdlpPath, args)
 
@@ -390,7 +426,6 @@ ipcMain.handle('ytdlp:download', async (event, { url, outputDir, format }) => {
     function finish(err, data) {
       if (done) return
       done = true
-
       if (err) reject(err)
       else resolve(data)
     }
@@ -399,14 +434,10 @@ ipcMain.handle('ytdlp:download', async (event, { url, outputDir, format }) => {
       const lines = data.toString().split(/\r?\n/).filter(Boolean)
 
       for (const line of lines) {
-        const progressMatch = line.match(/\[download\]\s+([\d.]+)%\s+of\s+~?\s*([^\s]+).*?\sat\s+([^\s]+)/i)
+        const progress = parseProgressLine(line)
 
-        if (progressMatch) {
-          mainWindow?.webContents.send('ytdlp:progress', {
-            percent: Number.parseFloat(progressMatch[1]),
-            size: progressMatch[2],
-            speed: progressMatch[3]
-          })
+        if (progress) {
+          mainWindow?.webContents.send('ytdlp:progress', progress)
         }
 
         const destMatch = line.match(/\[download\]\s+Destination:\s+(.+)/i)
@@ -456,7 +487,8 @@ ipcMain.handle('ytdlp:download', async (event, { url, outputDir, format }) => {
       mainWindow?.webContents.send('ytdlp:progress', {
         percent: 100,
         size: '',
-        speed: ''
+        speed: '',
+        eta: '00:00'
       })
 
       finish(null, { filePath: lastFile })
