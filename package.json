@@ -3,9 +3,10 @@
   "version": "1.0.0",
   "description": "YouTube Re-upload Manager",
   "main": "electron/main.js",
+  "author": "jalisco2213",
   "scripts": {
     "dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
-    "build": "vite build && electron-builder",
+    "build": "vite build && mkdir -p .bin && printf '#!/bin/sh\\nexec python3 \"$@\"\\n' > .bin/python && chmod +x .bin/python && PATH=$PWD/.bin:$PATH electron-builder",
     "vite": "vite",
     "electron": "electron ."
   },

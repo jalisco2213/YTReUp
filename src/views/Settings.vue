@@ -8,100 +8,99 @@
     </div>
 
     <div class="content">
-      <!-- API Credentials -->
       <div class="section-title">Google API Credentials</div>
+
       <div class="card">
         <p class="hint">
-          Create a project at <strong>console.cloud.google.com</strong>, enable YouTube Data API v3,
-          create OAuth 2.0 credentials (Desktop app), and paste the Client ID and Secret below.
+          Create OAuth 2.0 credentials with type <strong>Desktop app</strong>, enable YouTube Data API v3, then paste Client ID and Client Secret here.
         </p>
+
         <div class="field">
           <label class="label">Client ID</label>
-          <input v-model="clientId" placeholder="xxxx.apps.googleusercontent.com" type="password" />
+          <input v-model="clientId" placeholder="xxxx.apps.googleusercontent.com" type="password" autocomplete="off" />
         </div>
+
         <div class="field">
           <label class="label">Client Secret</label>
-          <input v-model="clientSecret" placeholder="GOCSPX-…" type="password" />
+          <input v-model="clientSecret" placeholder="GOCSPX-…" type="password" autocomplete="off" />
         </div>
-        <button class="btn-secondary" @click="saveCredentials" :disabled="saving">
-          {{ saving ? 'Saving…' : '✓ Save Credentials' }}
-        </button>
+
+        <div class="actions">
+          <button class="btn-secondary" @click="saveCredentials" :disabled="saving || !clientId || !clientSecret">
+            {{ saving ? 'Saving…' : '✓ Save Credentials' }}
+          </button>
+
+          <button class="btn-primary" @click="connect" :disabled="connecting || !clientId || !clientSecret">
+            <span v-if="connecting" class="spin">↻</span>
+            <span v-else>→</span>
+            {{ connecting ? 'Connecting…' : 'Connect YouTube' }}
+          </button>
+        </div>
+
+        <div v-if="saveSuccess" class="success-msg">{{ saveSuccess }}</div>
+        <div v-if="authError" class="error-msg">{{ authError }}</div>
       </div>
 
-      <!-- OAuth Auth -->
       <div class="section-title">Authentication</div>
+
       <div class="card">
         <div v-if="yt.isAuthenticated" class="auth-status connected">
           <div class="status-dot green" />
-          <span>Connected</span>
-          <span v-if="yt.channelInfo" class="mono" style="font-size:11px;color:var(--text2)">
-            — {{ yt.channelInfo.title }}
-          </span>
-          <button class="btn-ghost" style="margin-left:auto;color:var(--accent)" @click="disconnect">
-            Disconnect
-          </button>
-        </div>
-        <div v-else class="auth-status">
-          <div class="status-dot red" />
-          <span style="color:var(--text2)">Not authenticated</span>
-        </div>
-
-        <div v-if="!yt.isAuthenticated" style="margin-top:16px">
-          <div class="oauth-steps">
-            <div class="step">
-              <div class="step-num">1</div>
-              <div>Save your credentials above, then click the button below to open Google's auth page</div>
-            </div>
-            <div class="step">
-              <div class="step-num">2</div>
-              <div>Authorise the app in your browser and copy the code Google provides</div>
-            </div>
-            <div class="step">
-              <div class="step-num">3</div>
-              <div>Paste the code here and click Verify</div>
-            </div>
+          <div class="auth-text">
+            <div>Connected</div>
+            <div v-if="yt.channelInfo" class="mono auth-channel">{{ yt.channelInfo.title }}</div>
           </div>
 
-          <div style="display:flex;gap:10px;margin-top:16px;align-items:flex-start">
-            <button class="btn-primary" @click="openAuth" :disabled="!clientId || !clientSecret">
-              → Open Google Auth
+          <div class="auth-actions">
+            <button class="btn-secondary" @click="refreshChannel" :disabled="refreshing">
+              <span v-if="refreshing" class="spin">↻</span>
+              {{ refreshing ? 'Refreshing…' : 'Refresh' }}
+            </button>
+
+            <button class="btn-ghost danger" @click="disconnect">
+              Disconnect
             </button>
           </div>
+        </div>
 
-          <div v-if="authOpened" style="margin-top:14px">
-            <label class="label">Paste auth code</label>
-            <div style="display:flex;gap:10px">
-              <input v-model="authCode" placeholder="4/0AXxxxxxx…" />
-              <button class="btn-success" @click="verify" :disabled="!authCode || verifying">
-                <span v-if="verifying" class="spin">↻</span>
-                {{ verifying ? 'Verifying…' : 'Verify' }}
-              </button>
-            </div>
+        <div v-else class="auth-status">
+          <div class="status-dot red" />
+          <div class="auth-text">
+            <div>Not authenticated</div>
+            <div class="mono auth-channel">Save credentials and connect your YouTube channel</div>
           </div>
-
-          <div v-if="authError" class="error-msg">{{ authError }}</div>
         </div>
       </div>
 
-      <!-- Download settings -->
       <div class="section-title">Download</div>
+
       <div class="card">
         <div class="field">
           <label class="label">Default download directory</label>
           <input v-model="downloadDir" placeholder="Leave empty for system temp" />
         </div>
-        <button class="btn-secondary" @click="saveDownloadSettings">Save</button>
+
+        <button class="btn-secondary" @click="saveDownloadSettings" :disabled="savingDownload">
+          {{ savingDownload ? 'Saving…' : 'Save' }}
+        </button>
+
+        <div v-if="downloadSuccess" class="success-msg">{{ downloadSuccess }}</div>
       </div>
 
-      <!-- Info -->
       <div class="card info-card">
+        <div class="info-row">
+          <span class="mono" style="color:var(--text2)">OAuth mode</span>
+          <span class="mono badge badge-done">Desktop loopback</span>
+        </div>
+
         <div class="info-row">
           <span class="mono" style="color:var(--text2)">yt-dlp</span>
           <span class="mono badge badge-done">required in PATH</span>
         </div>
+
         <div class="info-row">
           <span class="mono" style="color:var(--text2)">YouTube API quota</span>
-          <span class="mono" style="color:var(--yellow)">~6 uploads/day (free tier)</span>
+          <span class="mono" style="color:var(--yellow)">uploads use quota</span>
         </div>
       </div>
     </div>
@@ -117,72 +116,132 @@ const yt = useYouTubeStore()
 const clientId = ref('')
 const clientSecret = ref('')
 const downloadDir = ref('')
+
 const saving = ref(false)
-const authOpened = ref(false)
-const authCode = ref('')
-const verifying = ref(false)
+const connecting = ref(false)
+const refreshing = ref(false)
+const savingDownload = ref(false)
+
 const authError = ref('')
+const saveSuccess = ref('')
+const downloadSuccess = ref('')
 
 onMounted(async () => {
+  await yt.loadConfig()
   const cfg = await window.electron.loadConfig()
   clientId.value = cfg.clientId || ''
   clientSecret.value = cfg.clientSecret || ''
   downloadDir.value = cfg.downloadDir || ''
+
+  if (yt.isAuthenticated && !yt.channelInfo) {
+    try {
+      await yt.fetchChannelInfo()
+      await yt.fetchRecentVideos()
+    } catch {}
+  }
 })
 
 async function saveCredentials() {
+  authError.value = ''
+  saveSuccess.value = ''
   saving.value = true
-  const cfg = await window.electron.loadConfig()
-  await window.electron.saveConfig({ ...cfg, clientId: clientId.value, clientSecret: clientSecret.value })
-  yt.CLIENT_ID = clientId.value
-  yt.CLIENT_SECRET = clientSecret.value
-  await yt.loadConfig()
-  saving.value = false
+
+  try {
+    await yt.saveCredentials(clientId.value, clientSecret.value)
+    saveSuccess.value = 'Credentials saved'
+  } catch (e) {
+    authError.value = e.message || 'Failed to save credentials'
+  } finally {
+    saving.value = false
+  }
+}
+
+async function connect() {
+  authError.value = ''
+  saveSuccess.value = ''
+  connecting.value = true
+
+  try {
+    await yt.saveCredentials(clientId.value, clientSecret.value)
+    await yt.authorize()
+    saveSuccess.value = 'YouTube channel connected'
+  } catch (e) {
+    authError.value = e.message || 'Failed to connect YouTube'
+  } finally {
+    connecting.value = false
+  }
+}
+
+async function refreshChannel() {
+  authError.value = ''
+  refreshing.value = true
+
+  try {
+    await yt.fetchChannelInfo()
+    await yt.fetchRecentVideos()
+  } catch (e) {
+    authError.value = e.message || 'Failed to refresh channel'
+  } finally {
+    refreshing.value = false
+  }
 }
 
 async function saveDownloadSettings() {
-  const cfg = await window.electron.loadConfig()
-  await window.electron.saveConfig({ ...cfg, downloadDir: downloadDir.value })
-}
+  savingDownload.value = true
+  downloadSuccess.value = ''
 
-function openAuth() {
-  yt.CLIENT_ID.value = clientId.value
-  yt.CLIENT_SECRET.value = clientSecret.value
-  const url = yt.getAuthUrl()
-  window.electron.openAuth(url)
-  authOpened.value = true
-}
-
-async function verify() {
-  authError.value = ''
-  verifying.value = true
   try {
-    await yt.exchangeCode(authCode.value.trim())
-    await yt.fetchChannelInfo()
-    await yt.fetchRecentVideos()
-    authOpened.value = false
-    authCode.value = ''
-  } catch (e) {
-    authError.value = e.message
+    const cfg = await window.electron.loadConfig()
+    await window.electron.saveConfig({ ...cfg, downloadDir: downloadDir.value })
+    downloadSuccess.value = 'Download settings saved'
   } finally {
-    verifying.value = false
+    savingDownload.value = false
   }
 }
 
 async function disconnect() {
-  yt.logout()
-  const cfg = await window.electron.loadConfig()
-  await window.electron.saveConfig({ ...cfg, accessToken: null, refreshToken: null })
+  authError.value = ''
+  saveSuccess.value = ''
+
+  try {
+    await yt.logout()
+  } catch (e) {
+    authError.value = e.message || 'Failed to disconnect'
+  }
 }
 </script>
 
 <style scoped>
-.view { display: flex; flex-direction: column; height: 100%; padding: 28px; gap: 16px; overflow-y: auto; }
-.view-header { flex-shrink: 0; }
-.view-header h1 { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; }
-.view-sub { color: var(--text2); font-size: 13px; margin-top: 4px; }
+.view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 28px;
+  gap: 16px;
+  overflow-y: auto;
+}
 
-.content { display: flex; flex-direction: column; gap: 12px; }
+.view-header {
+  flex-shrink: 0;
+}
+
+.view-header h1 {
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.view-sub {
+  color: var(--text2);
+  font-size: 13px;
+  margin-top: 4px;
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
 
 .section-title {
   font-size: 11px;
@@ -194,11 +253,31 @@ async function disconnect() {
   margin-top: 8px;
 }
 
-.hint { font-size: 12px; color: var(--text2); line-height: 1.6; margin-bottom: 16px; }
-.hint strong { color: var(--text); }
+.hint {
+  font-size: 12px;
+  color: var(--text2);
+  line-height: 1.6;
+  margin-bottom: 16px;
+}
 
-.field { margin-bottom: 14px; }
-.field:last-of-type { margin-bottom: 16px; }
+.hint strong {
+  color: var(--text);
+}
+
+.field {
+  margin-bottom: 14px;
+}
+
+.field:last-of-type {
+  margin-bottom: 16px;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
 
 .auth-status {
   display: flex;
@@ -206,37 +285,84 @@ async function disconnect() {
   gap: 10px;
   font-weight: 600;
 }
+
+.auth-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.auth-channel {
+  font-size: 11px;
+  color: var(--text2);
+  font-weight: 400;
+  word-break: break-all;
+}
+
+.auth-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .status-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
   flex-shrink: 0;
 }
-.status-dot.green { background: var(--green); box-shadow: 0 0 6px var(--green); }
-.status-dot.red { background: var(--accent); }
 
-.oauth-steps { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
-.step { display: flex; gap: 12px; align-items: flex-start; font-size: 13px; color: var(--text2); line-height: 1.5; }
-.step-num {
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 11px;
-  font-weight: 700;
-  font-family: var(--font-mono);
-  flex-shrink: 0;
+.status-dot.green {
+  background: var(--green);
+  box-shadow: 0 0 6px var(--green);
 }
 
-.error-msg { color: var(--accent); font-size: 12px; font-family: var(--font-mono); margin-top: 10px; }
+.status-dot.red {
+  background: var(--accent);
+}
 
-.info-card { display: flex; flex-direction: column; gap: 10px; }
-.info-row { display: flex; align-items: center; justify-content: space-between; font-size: 12px; }
+.error-msg {
+  color: var(--accent);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  margin-top: 10px;
+}
 
-.spin { display: inline-block; animation: rotate 0.8s linear infinite; }
-@keyframes rotate { to { transform: rotate(360deg); } }
+.success-msg {
+  color: var(--green);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  margin-top: 10px;
+}
+
+.info-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.info-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  gap: 12px;
+}
+
+.danger {
+  color: var(--accent);
+}
+
+.spin {
+  display: inline-block;
+  animation: rotate 0.8s linear infinite;
+}
+
+@keyframes rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
 </style>
