@@ -130,7 +130,7 @@ const messages = {
     },
     download: {
       title: 'Download',
-      subtitle: 'Fetch video from URL via yt-dlp',
+      subtitle: 'Fetch video from URL via',
       url: 'Video URL',
       urlPlaceholder: 'https://...',
       getInfo: 'Get info',
@@ -322,7 +322,7 @@ const messages = {
     },
     download: {
       title: 'Скачать',
-      subtitle: 'Скачивание видео по ссылке через yt-dlp',
+      subtitle: 'Скачивание видео по ссылке через',
       url: 'Ссылка на видео',
       urlPlaceholder: 'https://...',
       getInfo: 'Получить данные',
